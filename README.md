@@ -138,6 +138,13 @@ nothing to rebuild, reconfigure, or reinstall. (If the profile you used last
 was deleted, the picker simply preselects the first one; an active "Open for
 1 Hour" pointing at a deleted profile is ignored and the picker returns.)
 
+**How do I stop "Open for 1 Hour" early?** Launch the app with no URL —
+`open -a ChromeProfileSelector` (or double-click it in /Applications). While an
+hour is active, the dialog shows which profile links are going to, and until
+when, with a **Stop Auto-Open** button. (Terminal alternative:
+`defaults delete org.chromeprofileselector autoOpenUntil`.) It also simply
+expires on its own.
+
 **It doesn't appear in the default-browser list in System Settings.** macOS
 only lists browsers that have been launched at least once, and System Settings
 caches the list. Normally irrelevant — `install.sh` sets the default directly,
