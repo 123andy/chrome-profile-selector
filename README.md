@@ -84,9 +84,10 @@ cd chrome-profile-selector
 ./install.sh
 ```
 
-That's the whole setup: it builds the app, installs it to `/Applications`, and
-asks macOS to make it the default browser — you just click **Use
-"ChromeProfileSelector"** in the confirmation dialog macOS shows. (If you
+That's the whole setup: it builds the app (as `Chrome Profile Selector.app`),
+installs it to `/Applications`, and asks macOS to make it the default browser —
+you just click **Use "Chrome Profile Selector"** in the confirmation dialog
+macOS shows. (If you
 dismiss the dialog, you can set it later in System Settings → Desktop & Dock →
 Default web browser, or re-run `./install.sh`.)
 
