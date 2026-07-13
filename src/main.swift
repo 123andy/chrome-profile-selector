@@ -246,6 +246,81 @@ final class PickerController: NSObject, NSTableViewDataSource, NSTableViewDelega
     @objc func doubleClicked(_ sender: Any?) { onActivate?() }
 }
 
+// MARK: - Rules management UI (shown when the app is launched directly)
+
+final class RulesManager: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+    private let profiles: [Profile]
+    private(set) var entries: [(key: String, display: String)] = []
+    weak var table: NSTableView?
+    weak var removeButton: NSButton?
+    weak var clearButton: NSButton?
+
+    init(profiles: [Profile]) {
+        self.profiles = profiles
+        super.init()
+        rebuildEntries()
+    }
+
+    private static func rules() -> [String: [String: String]] {
+        (UserDefaults.standard.dictionary(forKey: "appRules") as? [String: [String: String]]) ?? [:]
+    }
+
+    private func rebuildEntries() {
+        entries = Self.rules().sorted { $0.key < $1.key }.map { key, rule in
+            let profileLabel = profiles.first(where: { $0.dir == rule["dir"] })?.label
+                ?? rule["dir"] ?? "?"
+            return (key, "\(rule["name"] ?? key)   →   \(profileLabel)")
+        }
+    }
+
+    private func refresh() {
+        rebuildEntries()
+        table?.reloadData()
+        updateButtons()
+    }
+
+    func updateButtons() {
+        removeButton?.isEnabled = (table?.selectedRow ?? -1) >= 0
+        clearButton?.isEnabled = !entries.isEmpty
+    }
+
+    @objc func removeSelected(_ sender: Any?) {
+        guard let row = table?.selectedRow, row >= 0, row < entries.count else { return }
+        var rules = Self.rules()
+        rules.removeValue(forKey: entries[row].key)
+        if rules.isEmpty {
+            UserDefaults.standard.removeObject(forKey: "appRules")
+        } else {
+            UserDefaults.standard.set(rules, forKey: "appRules")
+        }
+        refresh()
+    }
+
+    @objc func clearAll(_ sender: Any?) {
+        UserDefaults.standard.removeObject(forKey: "appRules")
+        refresh()
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int { entries.count }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let id = NSUserInterfaceItemIdentifier("rule")
+        let field: NSTextField
+        if let reused = tableView.makeView(withIdentifier: id, owner: nil) as? NSTextField {
+            field = reused
+        } else {
+            field = NSTextField(labelWithString: "")
+            field.identifier = id
+            field.font = NSFont.systemFont(ofSize: 12)
+            field.lineBreakMode = .byTruncatingTail
+        }
+        field.stringValue = entries[row].display
+        return field
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) { updateButtons() }
+}
+
 // MARK: - App lifecycle
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -285,27 +360,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             let rules = self.appRules()
+            var manager: RulesManager?
             if !rules.isEmpty {
-                info += "\n\nApp rules:"
-                for (_, rule) in rules.sorted(by: { $0.key < $1.key }) {
-                    info += "\n•  \(rule["name"] ?? "?")  →  \(label(rule["dir"] ?? "?"))"
-                }
-                info += "\n\nHold ⇧ Shift while a link opens to bypass rules and get the picker."
+                info += "\n\nApp rules (removals apply immediately). Hold ⇧ Shift while a link opens to bypass rules and get the picker."
+
+                let m = RulesManager(profiles: profiles)
+                manager = m
+                let width: CGFloat = 460
+                let table = NSTableView(frame: .zero)
+                let col = NSTableColumn(identifier: .init("r"))
+                col.width = width - 24
+                table.addTableColumn(col)
+                table.headerView = nil
+                table.rowHeight = 20
+                table.allowsEmptySelection = true
+                table.allowsMultipleSelection = false
+                table.dataSource = m
+                table.delegate = m
+
+                let tableHeight = CGFloat(min(m.entries.count, 6)) * (table.rowHeight + 2) + 4
+                let buttonRow: CGFloat = 30
+                let scroll = NSScrollView(frame: NSRect(x: 0, y: buttonRow, width: width, height: tableHeight))
+                scroll.documentView = table
+                scroll.hasVerticalScroller = true
+                scroll.borderType = .bezelBorder
+
+                let removeBtn = NSButton(title: "Remove Selected", target: m,
+                                         action: #selector(RulesManager.removeSelected(_:)))
+                removeBtn.frame = NSRect(x: 0, y: 0, width: 150, height: 26)
+                let clearBtn = NSButton(title: "Clear All", target: m,
+                                        action: #selector(RulesManager.clearAll(_:)))
+                clearBtn.frame = NSRect(x: 156, y: 0, width: 100, height: 26)
+
+                let container = NSView(frame: NSRect(x: 0, y: 0, width: width,
+                                                     height: tableHeight + buttonRow))
+                container.addSubview(scroll)
+                container.addSubview(removeBtn)
+                container.addSubview(clearBtn)
+
+                m.table = table
+                m.removeButton = removeBtn
+                m.clearButton = clearBtn
+                table.reloadData()
+                m.updateButtons()
+                a.accessoryView = container
             }
             a.informativeText = info
 
             a.addButton(withTitle: "OK")
-            var stopIndex = -1, clearIndex = -1, next = 1
-            if autoActive { a.addButton(withTitle: "Stop Auto-Open"); stopIndex = next; next += 1 }
-            if !rules.isEmpty { a.addButton(withTitle: "Clear App Rules"); clearIndex = next; next += 1 }
+            var stopIndex = -1
+            if autoActive { a.addButton(withTitle: "Stop Auto-Open"); stopIndex = 1 }
 
             let idx = a.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
             if idx == stopIndex {
                 defaults.removeObject(forKey: "autoOpenUntil")
                 defaults.removeObject(forKey: "autoOpenProfileDir")
-            } else if idx == clearIndex {
-                defaults.removeObject(forKey: "appRules")
             }
+            _ = manager // keep alive for the modal's duration
             NSApp.terminate(nil)
         }
     }

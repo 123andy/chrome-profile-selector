@@ -145,12 +145,14 @@ was deleted, the picker simply preselects the first one; an active "Open for
 
 **How do I stop "Open for 1 Hour" early, or undo an "Always Use for This
 App" rule?** Launch the app with no URL — `open -a ChromeProfileSelector` (or
-double-click it in /Applications). The dialog shows the active auto-open and
-all app rules, with **Stop Auto-Open** and **Clear App Rules** buttons.
-(Terminal alternatives: `defaults delete org.chromeprofileselector autoOpenUntil`
-and `defaults delete org.chromeprofileselector appRules`.) And remember:
-holding **⇧ Shift** while any link opens bypasses all rules for that one link
-and shows the picker.
+double-click it in /Applications). The dialog shows the active auto-open (with
+a **Stop Auto-Open** button) and a list of your app rules — select a rule and
+click **Remove Selected** to delete just that one, or **Clear All** to start
+over; removals apply immediately. (Terminal alternatives:
+`defaults delete org.chromeprofileselector autoOpenUntil` and
+`defaults delete org.chromeprofileselector appRules`.) And remember: holding
+**⇧ Shift** while any link opens bypasses all rules for that one link and
+shows the picker.
 
 **An app rule routes links I sometimes want elsewhere.** That's what the
 ⇧ Shift bypass is for — hold it while the link opens and pick manually that one
