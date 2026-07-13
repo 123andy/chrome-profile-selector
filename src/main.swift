@@ -126,7 +126,11 @@ func openInChrome(profileDir: String, url: String) {
 
 struct SenderInfo {
     let name: String
+    let bundleID: String?
     let icon: NSImage?
+
+    /// Stable key for per-app rules: bundle id when known, else the name.
+    var ruleKey: String { bundleID ?? "name:\(name)" }
 
     /// Must be called while the URL-open Apple Event is still "current",
     /// i.e. synchronously inside application(_:open:).
@@ -141,7 +145,8 @@ struct SenderInfo {
         // (e.g. the terminal the command was typed in).
         if let front = NSWorkspace.shared.frontmostApplication,
            front.processIdentifier != ProcessInfo.processInfo.processIdentifier {
-            return SenderInfo(name: front.localizedName ?? "unknown", icon: front.icon)
+            return SenderInfo(name: front.localizedName ?? "unknown",
+                              bundleID: front.bundleIdentifier, icon: front.icon)
         }
         return nil
     }
@@ -157,7 +162,7 @@ struct SenderInfo {
                app.bundleIdentifier != nil,
                current != ProcessInfo.processInfo.processIdentifier {
                 return SenderInfo(name: app.localizedName ?? app.bundleIdentifier ?? "unknown",
-                                  icon: app.icon)
+                                  bundleID: app.bundleIdentifier, icon: app.icon)
             }
             guard let ppid = parentPID(of: current) else { break }
             current = ppid
@@ -254,29 +259,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var receivedAny = false
 
     func applicationDidFinishLaunching(_ note: Notification) {
-        // Launched directly (no URL): show a hint (and auto-open status), then quit.
+        // Launched directly (no URL): show a hint plus auto-open status and
+        // per-app rules, with buttons to clear them; then quit.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
             guard let self, !self.receivedAny else { return }
             NSApp.activate(ignoringOtherApps: true)
             let defaults = UserDefaults.standard
+            let profiles = loadProfiles()
+            func label(_ dir: String) -> String {
+                profiles.first(where: { $0.dir == dir })?.label ?? dir
+            }
+
             let a = NSAlert()
             a.messageText = "ChromeProfileSelector"
-            a.informativeText = "This app routes links to the Chrome profile you pick. Set it as the default browser (System Settings → Desktop & Dock), then open any link."
+            var info = "This app routes links to the Chrome profile you pick. Set it as the default browser (System Settings → Desktop & Dock), then open any link."
+
+            var autoActive = false
             if let until = defaults.object(forKey: "autoOpenUntil") as? Date,
                until > Date(),
                let autoDir = defaults.string(forKey: "autoOpenProfileDir") {
-                let label = loadProfiles().first(where: { $0.dir == autoDir })?.label ?? autoDir
+                autoActive = true
                 let fmt = DateFormatter()
                 fmt.timeStyle = .short
-                a.informativeText += "\n\nAuto-open is ON: all links go to \(label) until \(fmt.string(from: until))."
-                a.addButton(withTitle: "OK")
-                a.addButton(withTitle: "Stop Auto-Open")
-                if a.runModal() == .alertSecondButtonReturn {
-                    defaults.removeObject(forKey: "autoOpenUntil")
-                    defaults.removeObject(forKey: "autoOpenProfileDir")
+                info += "\n\nAuto-open is ON: all links go to \(label(autoDir)) until \(fmt.string(from: until))."
+            }
+
+            let rules = self.appRules()
+            if !rules.isEmpty {
+                info += "\n\nApp rules:"
+                for (_, rule) in rules.sorted(by: { $0.key < $1.key }) {
+                    info += "\n•  \(rule["name"] ?? "?")  →  \(label(rule["dir"] ?? "?"))"
                 }
-            } else {
-                a.runModal()
+                info += "\n\nHold ⇧ Shift while a link opens to bypass rules and get the picker."
+            }
+            a.informativeText = info
+
+            a.addButton(withTitle: "OK")
+            var stopIndex = -1, clearIndex = -1, next = 1
+            if autoActive { a.addButton(withTitle: "Stop Auto-Open"); stopIndex = next; next += 1 }
+            if !rules.isEmpty { a.addButton(withTitle: "Clear App Rules"); clearIndex = next; next += 1 }
+
+            let idx = a.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+            if idx == stopIndex {
+                defaults.removeObject(forKey: "autoOpenUntil")
+                defaults.removeObject(forKey: "autoOpenProfileDir")
+            } else if idx == clearIndex {
+                defaults.removeObject(forKey: "appRules")
             }
             NSApp.terminate(nil)
         }
@@ -311,13 +339,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let defaults = UserDefaults.standard
 
-        // "Open for 1 Hour" active? Route straight to that profile, no dialog.
-        if let until = defaults.object(forKey: "autoOpenUntil") as? Date,
-           until > Date(),
-           let autoDir = defaults.string(forKey: "autoOpenProfileDir"),
-           profiles.contains(where: { $0.dir == autoDir }) {
-            openInChrome(profileDir: autoDir, url: url)
-            return
+        // Holding Shift while a link opens forces the picker, bypassing both
+        // "Open for 1 Hour" and per-app rules.
+        let bypass = NSEvent.modifierFlags.contains(.shift)
+
+        if !bypass {
+            // "Open for 1 Hour" active? Route straight to that profile, no dialog.
+            if let until = defaults.object(forKey: "autoOpenUntil") as? Date,
+               until > Date(),
+               let autoDir = defaults.string(forKey: "autoOpenProfileDir"),
+               profiles.contains(where: { $0.dir == autoDir }) {
+                openInChrome(profileDir: autoDir, url: url)
+                return
+            }
+            // Per-app rule for this sender? ("Always Use for This App")
+            if let sender = request.sender,
+               let rule = appRules()[sender.ruleKey],
+               let ruleDir = rule["dir"],
+               profiles.contains(where: { $0.dir == ruleDir }) {
+                openInChrome(profileDir: ruleDir, url: url)
+                return
+            }
         }
 
         let lastDir = defaults.string(forKey: "lastProfileDir")
@@ -328,6 +370,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "Open")            // Return
         alert.addButton(withTitle: "Cancel")          // Esc
         alert.addButton(withTitle: "Open for 1 Hour") // this profile, silently, for an hour
+        var alwaysButtonIndex = -1
+        if let sender = request.sender {
+            alert.addButton(withTitle: "Always Use for \(sender.name)")
+            alwaysButtonIndex = 3
+        }
 
         let width: CGFloat = 580
         let urlWidth = width - 30 // leave room for the copy button on the right
@@ -425,9 +472,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         NSApp.activate(ignoringOtherApps: true)
         let response = alert.runModal()
-        let openNow = response == .alertFirstButtonReturn
-        let openForHour = response == .alertThirdButtonReturn
-        guard openNow || openForHour else { return } // Cancel: URL dropped on purpose
+        let buttonIndex = response.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+        let openNow = buttonIndex == 0
+        let openForHour = buttonIndex == 2
+        let alwaysForApp = buttonIndex == alwaysButtonIndex && alwaysButtonIndex > 0
+        guard openNow || openForHour || alwaysForApp else { return } // Cancel: URL dropped on purpose
 
         var row = table.selectedRow
         if row < 0 { row = preselect }
@@ -437,7 +486,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             defaults.set(Date().addingTimeInterval(3600), forKey: "autoOpenUntil")
             defaults.set(chosen.dir, forKey: "autoOpenProfileDir")
         }
+        if alwaysForApp, let sender = request.sender {
+            var rules = appRules()
+            rules[sender.ruleKey] = ["dir": chosen.dir, "name": sender.name]
+            defaults.set(rules, forKey: "appRules")
+        }
         openInChrome(profileDir: chosen.dir, url: url)
+    }
+
+    private func appRules() -> [String: [String: String]] {
+        (UserDefaults.standard.dictionary(forKey: "appRules") as? [String: [String: String]]) ?? [:]
     }
 }
 

@@ -27,6 +27,12 @@ When any app opens an `http`/`https` URL, a small dialog appears:
   work session. To end it early, launch the app directly
   (`open -a ChromeProfileSelector`) and click **Stop Auto-Open**; it expires on
   its own otherwise.
+- **"Always Use for *This App*"** — per-app routing rules. Click it once on a
+  WhatsApp link with your personal profile highlighted, and every WhatsApp link
+  opens there from then on, no dialog. Rules are keyed to the sending app's
+  bundle id. **Hold ⇧ Shift while a link opens** to bypass rules (and the
+  1-hour mode) and force the picker; launch the app directly to review rules or
+  clear them.
 - **Return/Enter** opens the highlighted profile; **Esc** cancels (drops the URL).
 - **↑/↓** move the highlight; pressing **1–9** opens that profile instantly;
   double-click works too.
@@ -137,12 +143,19 @@ nothing to rebuild, reconfigure, or reinstall. (If the profile you used last
 was deleted, the picker simply preselects the first one; an active "Open for
 1 Hour" pointing at a deleted profile is ignored and the picker returns.)
 
-**How do I stop "Open for 1 Hour" early?** Launch the app with no URL —
-`open -a ChromeProfileSelector` (or double-click it in /Applications). While an
-hour is active, the dialog shows which profile links are going to, and until
-when, with a **Stop Auto-Open** button. (Terminal alternative:
-`defaults delete org.chromeprofileselector autoOpenUntil`.) It also simply
-expires on its own.
+**How do I stop "Open for 1 Hour" early, or undo an "Always Use for This
+App" rule?** Launch the app with no URL — `open -a ChromeProfileSelector` (or
+double-click it in /Applications). The dialog shows the active auto-open and
+all app rules, with **Stop Auto-Open** and **Clear App Rules** buttons.
+(Terminal alternatives: `defaults delete org.chromeprofileselector autoOpenUntil`
+and `defaults delete org.chromeprofileselector appRules`.) And remember:
+holding **⇧ Shift** while any link opens bypasses all rules for that one link
+and shows the picker.
+
+**An app rule routes links I sometimes want elsewhere.** That's what the
+⇧ Shift bypass is for — hold it while the link opens and pick manually that one
+time. If it keeps happening, clear the rule and rely on the picker's
+remembered-last-choice instead.
 
 **It doesn't appear in the default-browser list in System Settings.** macOS
 only lists browsers that have been launched at least once, and System Settings
