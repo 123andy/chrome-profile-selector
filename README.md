@@ -54,15 +54,26 @@ When any app opens an `http`/`https` URL, a small dialog appears:
   identifies which application triggered the open — useful when a link opens
   and you're not sure why.
 
-## Why not just `open -a "Google Chrome" --args --profile-directory=...`?
+## Why launch Chrome this way?
 
-Because of a subtle and infuriating macOS/Chrome gotcha: that command **silently
-ignores `--profile-directory` whenever Chrome is already running** (`open`'s
-`--args` only apply on cold launch). Since Chrome is essentially always running,
-the flag does nothing and the tab lands in the wrong profile anyway.
+The obvious approach is macOS's `open` command:
 
-ChromeProfileSelector invokes the Chrome **binary** directly
-(`…/Google Chrome.app/Contents/MacOS/Google Chrome --profile-directory=… <url>`),
+```bash
+open -a "Google Chrome" --args --profile-directory="Profile 2" "https://example.com"
+```
+
+But there's a subtle and infuriating gotcha: that command **silently ignores
+`--profile-directory` whenever Chrome is already running** (`open`'s `--args`
+only apply on cold launch). Since Chrome is essentially always running, the
+flag does nothing and the tab lands in the wrong profile anyway.
+
+ChromeProfileSelector invokes the Chrome **binary** directly instead:
+
+```bash
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+    --profile-directory="Profile 2" "https://example.com"
+```
+
 which correctly hands the URL to the running Chrome instance and lands in the
 right profile every time.
 
