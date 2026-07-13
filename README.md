@@ -14,20 +14,7 @@ default browser and putting a fast, keyboard-first picker in front of Chrome.
 
 When any app opens an `http`/`https` URL, a small dialog appears:
 
-```
-┌──────────────────────────────────────────────────────┐
-│                        (◕‿◕)   ← photo of the        │
-│  Open in which Chrome profile?   highlighted profile │
-│  ⚙ Requested by Slack                                │
-│  https://github.com/some/very/long/path/to/a/pu… ⧉   │
-│  ┌──────────────────────────────────────────────┐    │
-│  │ 1   Work        (you@company.com)            │    │
-│  │ 2   Personal    (you@gmail.com)         ◀ ▌  │    │
-│  │ 3   Client A    (you@client.com)             │    │
-│  └──────────────────────────────────────────────┘    │
-│   [ Open for 1 Hour ]        [ Cancel ]  [ Open ]    │
-└──────────────────────────────────────────────────────┘
-```
+![The picker dialog: the highlighted profile's photo on top, the URL with a copy button, a numbered profile list, and Open / Open for 1 Hour / Cancel buttons](example.png)
 
 - **Shows the profile's photo**: the highlighted profile's Google account
   picture (circular, like Chrome's own profile switcher) appears at the top of
