@@ -131,6 +131,13 @@ Then pick a new default browser in System Settings.
 
 ## Troubleshooting
 
+**I added / removed / renamed a Chrome profile — do I need to reinstall?**
+No. The profile list, names, and photos are read fresh from Chrome's own data
+every time a link opens, so changes appear in the very next picker. There is
+nothing to rebuild, reconfigure, or reinstall. (If the profile you used last
+was deleted, the picker simply preselects the first one; an active "Open for
+1 Hour" pointing at a deleted profile is ignored and the picker returns.)
+
 **It doesn't appear in the default-browser list in System Settings.** macOS
 only lists browsers that have been launched at least once, and System Settings
 caches the list. Normally irrelevant — `install.sh` sets the default directly,
