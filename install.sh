@@ -7,7 +7,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-APP="${APP_DIR:-/Applications}/ChromeProfileSelector.app"
+APP="${APP_DIR:-/Applications}/Chrome Profile Selector.app"
 
 if ! command -v swiftc >/dev/null 2>&1; then
     echo "error: swiftc not found. Install the Xcode Command Line Tools first:" >&2
@@ -35,7 +35,7 @@ if ws.urlForApplication(toOpen: URL(string: \"http://example.com\")!) == appURL 
     print(\"Already the default browser — all set.\")
     exit(0)
 }
-print(\"Requesting default-browser change — click 'Use ChromeProfileSelector' in the dialog...\")
+print(\"Requesting default-browser change — click 'Use Chrome Profile Selector' in the dialog...\")
 let sem = DispatchSemaphore(value: 0)
 var code: Int32 = 0
 ws.setDefaultApplication(at: appURL, toOpenURLsWithScheme: \"http\") { error in

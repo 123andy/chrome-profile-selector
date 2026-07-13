@@ -7,9 +7,9 @@
 	<key>CFBundleIdentifier</key>
 	<string>org.chromeprofileselector</string>
 	<key>CFBundleName</key>
-	<string>ChromeProfileSelector</string>
+	<string>Chrome Profile Selector</string>
 	<key>CFBundleDisplayName</key>
-	<string>ChromeProfileSelector</string>
+	<string>Chrome Profile Selector</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

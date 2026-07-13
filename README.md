@@ -25,7 +25,7 @@ When any app opens an `http`/`https` URL, a small dialog appears:
 - **"Open for 1 Hour"** — a third button that opens the highlighted profile
   *and* routes every link there silently for the next hour. Great for a focused
   work session. To end it early, launch the app directly
-  (`open -a ChromeProfileSelector`) and click **Stop Auto-Open**; it expires on
+  (`open -a "Chrome Profile Selector"`) and click **Stop Auto-Open**; it expires on
   its own otherwise.
 - **"Always Use for *This App*"** — per-app routing rules. Click it once on a
   WhatsApp link with your personal profile highlighted, and every WhatsApp link
@@ -144,7 +144,7 @@ was deleted, the picker simply preselects the first one; an active "Open for
 1 Hour" pointing at a deleted profile is ignored and the picker returns.)
 
 **How do I stop "Open for 1 Hour" early, or undo an "Always Use for This
-App" rule?** Launch the app with no URL — `open -a ChromeProfileSelector` (or
+App" rule?** Launch the app with no URL — `open -a "Chrome Profile Selector"` (or
 double-click it in /Applications). The dialog shows the active auto-open (with
 a **Stop Auto-Open** button) and a list of your app rules — select a rule and
 click **Remove Selected** to delete just that one, or **Clear All** to start
@@ -163,7 +163,7 @@ remembered-last-choice instead.
 only lists browsers that have been launched at least once, and System Settings
 caches the list. Normally irrelevant — `install.sh` sets the default directly,
 bypassing that list — but if you want it listed: launch the app once
-(`open -a ChromeProfileSelector`), then quit and reopen System Settings. Or
+(`open -a "Chrome Profile Selector"`), then quit and reopen System Settings. Or
 just re-run `./install.sh`.
 
 **Every app now shows the picker, not just the terminal.** Correct — default

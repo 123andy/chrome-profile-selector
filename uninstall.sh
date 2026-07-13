@@ -2,7 +2,7 @@
 # Remove ChromeProfileSelector completely.
 set -euo pipefail
 
-APP="${APP_DIR:-/Applications}/ChromeProfileSelector.app"
+APP="${APP_DIR:-/Applications}/Chrome Profile Selector.app"
 
 if [[ ! -d "$APP" ]]; then
     echo "$APP not found — nothing to do."
