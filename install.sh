@@ -19,6 +19,8 @@ echo "Building..."
 mkdir -p "$APP/Contents/MacOS"
 swiftc -O src/main.swift -o "$APP/Contents/MacOS/ChromeProfileSelector"
 cp src/Info.plist "$APP/Contents/Info.plist"
+mkdir -p "$APP/Contents/Resources"
+cp src/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 # Ad-hoc sign and register with Launch Services so macOS sees a browser.
 codesign --force --sign - "$APP"
