@@ -226,20 +226,29 @@ func suggestedPattern(for url: String) -> String {
     return ""
 }
 
-/// Live "does the current link match?" readout under the regex field. Updates on
-/// every keystroke so you can confirm a rule hits the link before saving it.
+/// Live "does the link match?" readout under the regex field. The URL under test
+/// is either a fixed link (from the picker) or whatever is typed into an editable
+/// test field. Updates on every keystroke in either field.
 final class MatchIndicator: NSObject, NSTextFieldDelegate {
-    let url: String?
-    weak var field: NSTextField?
+    let fixedURL: String?
+    weak var regexField: NSTextField?
+    weak var testField: NSTextField?
     weak var label: NSTextField?
-    init(url: String?) { self.url = url }
+    init(fixedURL: String?) { self.fixedURL = fixedURL }
 
     func controlTextDidChange(_ obj: Notification) { refresh() }
 
+    /// The link to test against: the fixed one, else the typed test URL (nil if none).
+    var effectiveURL: String? {
+        if let fixedURL, !fixedURL.isEmpty { return fixedURL }
+        let typed = testField?.stringValue.trimmingCharacters(in: .whitespaces) ?? ""
+        return typed.isEmpty ? nil : typed
+    }
+
     /// True only when there's a link to test AND the current regex matches it.
     var matchesCurrentURL: Bool {
-        guard let url, let pattern = field?.stringValue.trimmingCharacters(in: .whitespaces),
-              !pattern.isEmpty,
+        guard let url = effectiveURL,
+              let pattern = regexField?.stringValue.trimmingCharacters(in: .whitespaces), !pattern.isEmpty,
               let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
         else { return false }
         return re.firstMatch(in: url, options: [], range: NSRange(url.startIndex..., in: url)) != nil
@@ -247,10 +256,14 @@ final class MatchIndicator: NSObject, NSTextFieldDelegate {
 
     func refresh() {
         guard let label else { return }
-        guard let url, !url.isEmpty else { label.stringValue = ""; return }
-        let pattern = (field?.stringValue ?? "").trimmingCharacters(in: .whitespaces)
+        let pattern = (regexField?.stringValue ?? "").trimmingCharacters(in: .whitespaces)
+        guard effectiveURL != nil else {
+            label.stringValue = fixedURL == nil ? "Enter a test URL above to check the regex" : ""
+            label.textColor = .secondaryLabelColor
+            return
+        }
         if pattern.isEmpty {
-            label.stringValue = "Enter a regex to test it against this link"
+            label.stringValue = "Enter a regex to test it against the link"
             label.textColor = .secondaryLabelColor
         } else if (try? NSRegularExpression(pattern: pattern)) == nil {
             label.stringValue = "⚠︎ Not a valid regex yet"
@@ -266,11 +279,12 @@ final class MatchIndicator: NSObject, NSTextFieldDelegate {
 }
 
 /// Shared add/edit sheet for a URL rule. Prefills the regex from `initialPattern`
-/// and preselects `preselectDir` in the profile dropdown. When a link is in
-/// context (`suggestedURL`) it shows a live match readout and asks for
-/// confirmation on save if the pattern doesn't match. Returns the entered
-/// (pattern, dir) on save, else nil — the caller decides whether to append or
-/// replace, so this function never touches the store itself.
+/// and preselects `preselectDir` in the profile dropdown. If a link is in context
+/// (`suggestedURL`) it tests against that; otherwise it shows an editable test-URL
+/// field. Either way a live match readout appears and, if a URL is present that
+/// the pattern doesn't match, save asks for confirmation. Returns the entered
+/// (pattern, dir) on save, else nil — the caller appends or replaces, so this
+/// function never touches the store itself.
 func urlRuleDialog(title: String, profiles: [Profile], initialPattern: String,
                    suggestedURL: String?, preselectDir: String?) -> (pattern: String, dir: String)? {
     guard !profiles.isEmpty else { return nil }
@@ -282,26 +296,32 @@ func urlRuleDialog(title: String, profiles: [Profile], initialPattern: String,
     alert.informativeText = info
 
     let width: CGFloat = 460
-    let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 110))
+    let height: CGFloat = hasURL ? 110 : 158
+    let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
 
     let patternLabel = NSTextField(labelWithString: "Regex")
     patternLabel.font = .systemFont(ofSize: 11)
     patternLabel.textColor = .secondaryLabelColor
-    patternLabel.frame = NSRect(x: 0, y: 94, width: width, height: 14)
 
-    let field = NSTextField(frame: NSRect(x: 0, y: 66, width: width, height: 24))
+    let field = NSTextField(frame: .zero)
     field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
     field.stringValue = initialPattern
     field.placeholderString = #"e.g. github\.com/acme  or  \.corp\.example\.com"#
 
+    // Editable test-URL field, shown only when no link is already in context.
+    let testLabel = NSTextField(labelWithString: "Test URL (optional)")
+    testLabel.font = .systemFont(ofSize: 11)
+    testLabel.textColor = .secondaryLabelColor
+    let testField = NSTextField(frame: .zero)
+    testField.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+    testField.placeholderString = "Paste a link to check the regex against it"
+
     let status = NSTextField(labelWithString: "")
     status.font = .systemFont(ofSize: 11)
-    status.frame = NSRect(x: 0, y: 48, width: width, height: 14)
 
     let profileLabel = NSTextField(labelWithString: "Profile")
     profileLabel.font = .systemFont(ofSize: 11)
     profileLabel.textColor = .secondaryLabelColor
-    profileLabel.frame = NSRect(x: 0, y: 28, width: width, height: 14)
 
     let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: width, height: 26))
     for p in profiles { popup.addItem(withTitle: p.label) }
@@ -309,15 +329,38 @@ func urlRuleDialog(title: String, profiles: [Profile], initialPattern: String,
         popup.selectItem(at: idx)
     }
 
-    let indicator = MatchIndicator(url: hasURL ? suggestedURL : nil)
-    indicator.field = field
+    // Lay out top-to-bottom (AppKit origin is bottom-left).
+    if hasURL {
+        patternLabel.frame = NSRect(x: 0, y: 94, width: width, height: 14)
+        field.frame        = NSRect(x: 0, y: 66, width: width, height: 24)
+        status.frame       = NSRect(x: 0, y: 48, width: width, height: 14)
+        profileLabel.frame = NSRect(x: 0, y: 28, width: width, height: 14)
+        popup.frame        = NSRect(x: 0, y: 0,  width: width, height: 26)
+    } else {
+        patternLabel.frame = NSRect(x: 0, y: 142, width: width, height: 14)
+        field.frame        = NSRect(x: 0, y: 114, width: width, height: 24)
+        testLabel.frame    = NSRect(x: 0, y: 96,  width: width, height: 14)
+        testField.frame    = NSRect(x: 0, y: 70,  width: width, height: 22)
+        status.frame       = NSRect(x: 0, y: 50,  width: width, height: 14)
+        profileLabel.frame = NSRect(x: 0, y: 30,  width: width, height: 14)
+        popup.frame        = NSRect(x: 0, y: 2,   width: width, height: 26)
+    }
+
+    let indicator = MatchIndicator(fixedURL: hasURL ? suggestedURL : nil)
+    indicator.regexField = field
+    indicator.testField = hasURL ? nil : testField
     indicator.label = status
     field.delegate = indicator
+    testField.delegate = indicator
     indicator.refresh()
 
     container.addSubview(patternLabel)
     container.addSubview(field)
-    if hasURL { container.addSubview(status) }
+    if !hasURL {
+        container.addSubview(testLabel)
+        container.addSubview(testField)
+    }
+    container.addSubview(status)
     container.addSubview(profileLabel)
     container.addSubview(popup)
     alert.accessoryView = container
@@ -337,11 +380,11 @@ func urlRuleDialog(title: String, profiles: [Profile], initialPattern: String,
             e.runModal()
             continue // reshow the dialog with the text intact
         }
-        // Confirm before saving a rule that doesn't actually match the link.
-        if hasURL, !indicator.matchesCurrentURL {
+        // If a link is present (fixed or typed) and the pattern misses it, confirm.
+        if let testURL = indicator.effectiveURL, !indicator.matchesCurrentURL {
             let c = NSAlert()
-            c.messageText = "This pattern doesn’t match the current link"
-            c.informativeText = "“\(pattern)” won’t route this link. Save it anyway?"
+            c.messageText = "This pattern doesn’t match the test link"
+            c.informativeText = "“\(pattern)” won’t route \(testURL). Save it anyway?"
             c.addButton(withTitle: "Keep Editing")
             c.addButton(withTitle: "Save Anyway")
             if c.runModal() == .alertFirstButtonReturn { continue }
