@@ -265,15 +265,18 @@ final class MatchIndicator: NSObject, NSTextFieldDelegate {
     }
 }
 
-/// Modal sheet to add a URL rule. Prefills the regex from `suggestedURL` (if any)
+/// Shared add/edit sheet for a URL rule. Prefills the regex from `initialPattern`
 /// and preselects `preselectDir` in the profile dropdown. When a link is in
-/// context it shows a live match readout and asks for confirmation on save if the
-/// pattern doesn't match. Returns the chosen profile dir on save, else nil.
-func addURLRuleDialog(profiles: [Profile], suggestedURL: String?, preselectDir: String?) -> String? {
+/// context (`suggestedURL`) it shows a live match readout and asks for
+/// confirmation on save if the pattern doesn't match. Returns the entered
+/// (pattern, dir) on save, else nil — the caller decides whether to append or
+/// replace, so this function never touches the store itself.
+func urlRuleDialog(title: String, profiles: [Profile], initialPattern: String,
+                   suggestedURL: String?, preselectDir: String?) -> (pattern: String, dir: String)? {
     guard !profiles.isEmpty else { return nil }
     let hasURL = !(suggestedURL ?? "").isEmpty
     let alert = NSAlert()
-    alert.messageText = "Add URL Rule"
+    alert.messageText = title
     var info = "Links whose address matches this regular expression open in the chosen profile automatically — no picker. Matching is case-insensitive and looks anywhere in the URL."
     if let suggestedURL, hasURL { info += "\n\nTesting against:\n\(suggestedURL)" }
     alert.informativeText = info
@@ -288,7 +291,7 @@ func addURLRuleDialog(profiles: [Profile], suggestedURL: String?, preselectDir: 
 
     let field = NSTextField(frame: NSRect(x: 0, y: 66, width: width, height: 24))
     field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-    field.stringValue = suggestedURL.map { suggestedPattern(for: $0) } ?? ""
+    field.stringValue = initialPattern
     field.placeholderString = #"e.g. github\.com/acme  or  \.corp\.example\.com"#
 
     let status = NSTextField(labelWithString: "")
@@ -332,7 +335,7 @@ func addURLRuleDialog(profiles: [Profile], suggestedURL: String?, preselectDir: 
             e.messageText = "Invalid regular expression"
             e.informativeText = "“\(pattern)” isn’t a valid regex. Edit it and try again."
             e.runModal()
-            continue // reshow the add dialog with the text intact
+            continue // reshow the dialog with the text intact
         }
         // Confirm before saving a rule that doesn't actually match the link.
         if hasURL, !indicator.matchesCurrentURL {
@@ -343,12 +346,54 @@ func addURLRuleDialog(profiles: [Profile], suggestedURL: String?, preselectDir: 
             c.addButton(withTitle: "Save Anyway")
             if c.runModal() == .alertFirstButtonReturn { continue }
         }
-        let dir = profiles[popup.indexOfSelectedItem].dir
-        var rules = urlRulesStore()
-        rules.append(["pattern": pattern, "dir": dir, "name": pattern])
-        saveURLRules(rules)
-        return dir
+        return (pattern, profiles[popup.indexOfSelectedItem].dir)
     }
+}
+
+/// Add a new URL rule (appended to the store). Returns the chosen profile dir on
+/// save, else nil — so the picker can open the link there immediately.
+func addURLRuleDialog(profiles: [Profile], suggestedURL: String?, preselectDir: String?) -> String? {
+    let initial = suggestedURL.map { suggestedPattern(for: $0) } ?? ""
+    guard let r = urlRuleDialog(title: "Add URL Rule", profiles: profiles,
+                                initialPattern: initial, suggestedURL: suggestedURL,
+                                preselectDir: preselectDir) else { return nil }
+    var rules = urlRulesStore()
+    rules.append(["pattern": r.pattern, "dir": r.dir, "name": r.pattern])
+    saveURLRules(rules)
+    return r.dir
+}
+
+/// Edit the URL rule at `index` in place. Returns true if saved.
+func editURLRuleDialog(profiles: [Profile], index: Int) -> Bool {
+    let rules = urlRulesStore()
+    guard index >= 0, index < rules.count else { return false }
+    let existing = rules[index]
+    guard let r = urlRuleDialog(title: "Edit URL Rule", profiles: profiles,
+                                initialPattern: existing["pattern"] ?? "", suggestedURL: nil,
+                                preselectDir: existing["dir"]) else { return false }
+    var updated = urlRulesStore()
+    guard index < updated.count else { return false }
+    updated[index] = ["pattern": r.pattern, "dir": r.dir, "name": r.pattern]
+    saveURLRules(updated)
+    return true
+}
+
+/// Small profile-picker sheet used to retarget an app rule. Returns the chosen dir.
+func pickProfileDialog(title: String, message: String, profiles: [Profile], preselectDir: String?) -> String? {
+    guard !profiles.isEmpty else { return nil }
+    let alert = NSAlert()
+    alert.messageText = title
+    alert.informativeText = message
+    let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 460, height: 26))
+    for p in profiles { popup.addItem(withTitle: p.label) }
+    if let preselectDir, let idx = profiles.firstIndex(where: { $0.dir == preselectDir }) {
+        popup.selectItem(at: idx)
+    }
+    alert.accessoryView = popup
+    alert.addButton(withTitle: "Save")
+    alert.addButton(withTitle: "Cancel")
+    guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+    return profiles[popup.indexOfSelectedItem].dir
 }
 
 // MARK: - Picker UI
@@ -438,6 +483,7 @@ final class RulesManager: NSObject, NSTableViewDataSource, NSTableViewDelegate {
 
     private(set) var entries: [(kind: Kind, display: String)] = []
     weak var table: NSTableView?
+    weak var editButton: NSButton?
     weak var removeButton: NSButton?
     weak var clearButton: NSButton?
 
@@ -473,8 +519,31 @@ final class RulesManager: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     }
 
     func updateButtons() {
-        removeButton?.isEnabled = (table?.selectedRow ?? -1) >= 0
+        let hasSelection = (table?.selectedRow ?? -1) >= 0
+        editButton?.isEnabled = hasSelection
+        removeButton?.isEnabled = hasSelection
         clearButton?.isEnabled = !entries.isEmpty
+    }
+
+    /// Edit the selected rule in place: regex + profile for URL rules, target
+    /// profile for app rules. Also wired to a row double-click.
+    @objc func editSelected(_ sender: Any?) {
+        guard let row = table?.selectedRow, row >= 0, row < entries.count else { return }
+        switch entries[row].kind {
+        case .url(let index):
+            if editURLRuleDialog(profiles: profiles, index: index) { refresh() }
+        case .app(let key):
+            let current = appRulesStore()[key]
+            let name = current?["name"] ?? key
+            if let dir = pickProfileDialog(title: "Edit App Rule",
+                                           message: "Choose the profile that “\(name)” links should open in.",
+                                           profiles: profiles, preselectDir: current?["dir"]) {
+                var updated = appRulesStore()
+                updated[key] = ["dir": dir, "name": name]
+                UserDefaults.standard.set(updated, forKey: "appRules")
+                refresh()
+            }
+        }
     }
 
     @objc func removeSelected(_ sender: Any?) {
@@ -541,6 +610,8 @@ final class RulesManager: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         table.allowsMultipleSelection = false
         table.dataSource = self
         table.delegate = self
+        table.target = self
+        table.doubleAction = #selector(editSelected(_:)) // double-click a rule to edit
 
         let buttonRow: CGFloat = 30
         let tableHeight = CGFloat(max(min(entries.count, 6), 1)) * (table.rowHeight + 2) + 4
@@ -551,21 +622,26 @@ final class RulesManager: NSObject, NSTableViewDataSource, NSTableViewDelegate {
 
         let addBtn = NSButton(title: "Add URL Rule…", target: self,
                               action: #selector(addURLRule(_:)))
-        addBtn.frame = NSRect(x: 0, y: 0, width: 140, height: 26)
+        addBtn.frame = NSRect(x: 0, y: 0, width: 128, height: 26)
+        let editBtn = NSButton(title: "Edit…", target: self,
+                               action: #selector(editSelected(_:)))
+        editBtn.frame = NSRect(x: 132, y: 0, width: 64, height: 26)
         let removeBtn = NSButton(title: "Remove Selected", target: self,
                                  action: #selector(removeSelected(_:)))
-        removeBtn.frame = NSRect(x: 146, y: 0, width: 150, height: 26)
+        removeBtn.frame = NSRect(x: 200, y: 0, width: 140, height: 26)
         let clearBtn = NSButton(title: "Clear All", target: self,
                                 action: #selector(clearAll(_:)))
-        clearBtn.frame = NSRect(x: 302, y: 0, width: 90, height: 26)
+        clearBtn.frame = NSRect(x: 344, y: 0, width: 88, height: 26)
 
         let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: tableHeight + buttonRow))
         container.addSubview(scroll)
         container.addSubview(addBtn)
+        container.addSubview(editBtn)
         container.addSubview(removeBtn)
         container.addSubview(clearBtn)
 
         self.table = table
+        self.editButton = editBtn
         self.removeButton = removeBtn
         self.clearButton = clearBtn
         table.reloadData()
@@ -614,7 +690,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
             info += "\n\nRouting rules (changes apply immediately). Hold ⇧ Shift while a link opens to bypass rules and get the picker."
             let manager = RulesManager(profiles: profiles)
-            a.accessoryView = manager.makeAccessory(width: 460)
+            a.accessoryView = manager.makeAccessory(width: 520)
             a.informativeText = info
 
             a.addButton(withTitle: "OK")
@@ -778,7 +854,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let editor = NSAlert()
             editor.messageText = "Routing Rules"
             editor.informativeText = "URL rules match the link text; app rules match the app that opened it. Add a URL rule for this link, or remove existing rules."
-            editor.accessoryView = manager.makeAccessory(width: 460)
+            editor.accessoryView = manager.makeAccessory(width: 520)
             editor.addButton(withTitle: "Done")
             editor.runModal()
             _ = manager // keep alive for the modal
