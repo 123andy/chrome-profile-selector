@@ -226,41 +226,95 @@ func suggestedPattern(for url: String) -> String {
     return ""
 }
 
+/// Live "does the current link match?" readout under the regex field. Updates on
+/// every keystroke so you can confirm a rule hits the link before saving it.
+final class MatchIndicator: NSObject, NSTextFieldDelegate {
+    let url: String?
+    weak var field: NSTextField?
+    weak var label: NSTextField?
+    init(url: String?) { self.url = url }
+
+    func controlTextDidChange(_ obj: Notification) { refresh() }
+
+    /// True only when there's a link to test AND the current regex matches it.
+    var matchesCurrentURL: Bool {
+        guard let url, let pattern = field?.stringValue.trimmingCharacters(in: .whitespaces),
+              !pattern.isEmpty,
+              let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+        else { return false }
+        return re.firstMatch(in: url, options: [], range: NSRange(url.startIndex..., in: url)) != nil
+    }
+
+    func refresh() {
+        guard let label else { return }
+        guard let url, !url.isEmpty else { label.stringValue = ""; return }
+        let pattern = (field?.stringValue ?? "").trimmingCharacters(in: .whitespaces)
+        if pattern.isEmpty {
+            label.stringValue = "Enter a regex to test it against this link"
+            label.textColor = .secondaryLabelColor
+        } else if (try? NSRegularExpression(pattern: pattern)) == nil {
+            label.stringValue = "⚠︎ Not a valid regex yet"
+            label.textColor = .systemOrange
+        } else if matchesCurrentURL {
+            label.stringValue = "✓ Matches this link"
+            label.textColor = .systemGreen
+        } else {
+            label.stringValue = "✕ Does not match this link"
+            label.textColor = .systemRed
+        }
+    }
+}
+
 /// Modal sheet to add a URL rule. Prefills the regex from `suggestedURL` (if any)
-/// and preselects `preselectDir` in the profile dropdown. Returns true if saved.
-@discardableResult
-func addURLRuleDialog(profiles: [Profile], suggestedURL: String?, preselectDir: String?) -> Bool {
-    guard !profiles.isEmpty else { return false }
+/// and preselects `preselectDir` in the profile dropdown. When a link is in
+/// context it shows a live match readout and asks for confirmation on save if the
+/// pattern doesn't match. Returns the chosen profile dir on save, else nil.
+func addURLRuleDialog(profiles: [Profile], suggestedURL: String?, preselectDir: String?) -> String? {
+    guard !profiles.isEmpty else { return nil }
+    let hasURL = !(suggestedURL ?? "").isEmpty
     let alert = NSAlert()
     alert.messageText = "Add URL Rule"
-    alert.informativeText = "Links whose address matches this regular expression open in the chosen profile automatically — no picker. Matching is case-insensitive and looks anywhere in the URL."
+    var info = "Links whose address matches this regular expression open in the chosen profile automatically — no picker. Matching is case-insensitive and looks anywhere in the URL."
+    if let suggestedURL, hasURL { info += "\n\nTesting against:\n\(suggestedURL)" }
+    alert.informativeText = info
 
     let width: CGFloat = 460
-    let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 92))
+    let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 110))
 
     let patternLabel = NSTextField(labelWithString: "Regex")
     patternLabel.font = .systemFont(ofSize: 11)
     patternLabel.textColor = .secondaryLabelColor
-    patternLabel.frame = NSRect(x: 0, y: 70, width: width, height: 14)
+    patternLabel.frame = NSRect(x: 0, y: 94, width: width, height: 14)
 
-    let field = NSTextField(frame: NSRect(x: 0, y: 42, width: width, height: 24))
+    let field = NSTextField(frame: NSRect(x: 0, y: 66, width: width, height: 24))
     field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
     field.stringValue = suggestedURL.map { suggestedPattern(for: $0) } ?? ""
     field.placeholderString = #"e.g. github\.com/acme  or  \.corp\.example\.com"#
 
+    let status = NSTextField(labelWithString: "")
+    status.font = .systemFont(ofSize: 11)
+    status.frame = NSRect(x: 0, y: 48, width: width, height: 14)
+
     let profileLabel = NSTextField(labelWithString: "Profile")
     profileLabel.font = .systemFont(ofSize: 11)
     profileLabel.textColor = .secondaryLabelColor
-    profileLabel.frame = NSRect(x: 0, y: 22, width: width, height: 14)
+    profileLabel.frame = NSRect(x: 0, y: 28, width: width, height: 14)
 
-    let popup = NSPopUpButton(frame: NSRect(x: 0, y: -4, width: width, height: 26))
+    let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: width, height: 26))
     for p in profiles { popup.addItem(withTitle: p.label) }
     if let preselectDir, let idx = profiles.firstIndex(where: { $0.dir == preselectDir }) {
         popup.selectItem(at: idx)
     }
 
+    let indicator = MatchIndicator(url: hasURL ? suggestedURL : nil)
+    indicator.field = field
+    indicator.label = status
+    field.delegate = indicator
+    indicator.refresh()
+
     container.addSubview(patternLabel)
     container.addSubview(field)
+    if hasURL { container.addSubview(status) }
     container.addSubview(profileLabel)
     container.addSubview(popup)
     alert.accessoryView = container
@@ -270,9 +324,9 @@ func addURLRuleDialog(profiles: [Profile], suggestedURL: String?, preselectDir: 
     alert.window.initialFirstResponder = field
 
     while true {
-        guard alert.runModal() == .alertFirstButtonReturn else { return false }
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
         let pattern = field.stringValue.trimmingCharacters(in: .whitespaces)
-        if pattern.isEmpty { return false }
+        if pattern.isEmpty { return nil }
         if (try? NSRegularExpression(pattern: pattern)) == nil {
             let e = NSAlert()
             e.messageText = "Invalid regular expression"
@@ -280,11 +334,20 @@ func addURLRuleDialog(profiles: [Profile], suggestedURL: String?, preselectDir: 
             e.runModal()
             continue // reshow the add dialog with the text intact
         }
+        // Confirm before saving a rule that doesn't actually match the link.
+        if hasURL, !indicator.matchesCurrentURL {
+            let c = NSAlert()
+            c.messageText = "This pattern doesn’t match the current link"
+            c.informativeText = "“\(pattern)” won’t route this link. Save it anyway?"
+            c.addButton(withTitle: "Keep Editing")
+            c.addButton(withTitle: "Save Anyway")
+            if c.runModal() == .alertFirstButtonReturn { continue }
+        }
         let dir = profiles[popup.indexOfSelectedItem].dir
         var rules = urlRulesStore()
         rules.append(["pattern": pattern, "dir": dir, "name": pattern])
         saveURLRules(rules)
-        return true
+        return dir
     }
 }
 
@@ -440,7 +503,7 @@ final class RulesManager: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     }
 
     @objc func addURLRule(_ sender: Any?) {
-        if addURLRuleDialog(profiles: profiles, suggestedURL: suggestedURL, preselectDir: preselectDir) {
+        if addURLRuleDialog(profiles: profiles, suggestedURL: suggestedURL, preselectDir: preselectDir) != nil {
             refresh()
         }
     }
@@ -639,6 +702,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.addButton(withTitle: "Always Use for \(sender.name)")
             alwaysButtonIndex = 3
         }
+        alert.addButton(withTitle: "Add RegEx Rule…") // define a URL rule for this link
+        let addRuleButtonIndex = alert.buttons.count - 1
 
         let width: CGFloat = 580
         let urlWidth = width - 30 // leave room for the copy button on the right
@@ -698,17 +763,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                   width: 20, height: 18)
         container.addSubview(copyButton)
 
-        // Gear button (to the left of copy): opens the rules editor, prefilled to
-        // add a URL rule for this link and the highlighted profile.
+        // Gear button — pinned to the window's upper-right corner (added after
+        // layout, below). Opens the rules editor, prefilled to add a URL rule for
+        // this link and the highlighted profile.
         let gearIcon = NSImage(systemSymbolName: "gearshape", accessibilityDescription: "Rules")
         let gearButton: NSButton = gearIcon.map {
             NSButton(image: $0, target: controller, action: #selector(PickerController.openRulesEditor(_:)))
         } ?? NSButton(title: "Rules", target: controller, action: #selector(PickerController.openRulesEditor(_:)))
         gearButton.isBordered = false
-        gearButton.toolTip = "URL & app rules"
-        gearButton.frame = NSRect(x: width - 44, y: tableHeight + gap + urlHeight - 18,
-                                  width: 20, height: 18)
-        container.addSubview(gearButton)
+        gearButton.toolTip = "Manage URL & app rules"
         controller.onGear = { [weak table] in
             let dir = (table?.selectedRow).flatMap { $0 >= 0 && $0 < profiles.count ? profiles[$0].dir : nil }
             let manager = RulesManager(profiles: profiles, suggestedURL: url, preselectDir: dir)
@@ -757,17 +820,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         table.scrollRowToVisible(preselect)
         alert.window.initialFirstResponder = table
 
+        // Pin the gear to the window's upper-right corner (needs a laid-out window).
+        alert.layout()
+        if let content = alert.window.contentView {
+            let b = content.bounds
+            gearButton.frame = NSRect(x: b.maxX - 30, y: b.maxY - 30, width: 22, height: 22)
+            gearButton.autoresizingMask = [.minXMargin, .minYMargin]
+            content.addSubview(gearButton)
+        }
+
         NSApp.activate(ignoringOtherApps: true)
         let response = alert.runModal()
         let buttonIndex = response.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+
+        var row = table.selectedRow
+        if row < 0 { row = preselect }
+        let chosen = profiles[row]
+
+        // "Add RegEx Rule…": define a URL rule for this link (prefilled to the
+        // highlighted profile). On save, open in the chosen profile now — future
+        // matching links route there automatically. On cancel, back to the picker.
+        if buttonIndex == addRuleButtonIndex {
+            if let dir = addURLRuleDialog(profiles: profiles, suggestedURL: url, preselectDir: chosen.dir) {
+                defaults.set(dir, forKey: "lastProfileDir")
+                openInChrome(profileDir: dir, url: url)
+            } else {
+                present(request)
+            }
+            return
+        }
+
         let openNow = buttonIndex == 0
         let openForHour = buttonIndex == 2
         let alwaysForApp = buttonIndex == alwaysButtonIndex && alwaysButtonIndex > 0
         guard openNow || openForHour || alwaysForApp else { return } // Cancel: URL dropped on purpose
 
-        var row = table.selectedRow
-        if row < 0 { row = preselect }
-        let chosen = profiles[row]
         defaults.set(chosen.dir, forKey: "lastProfileDir")
         if openForHour {
             defaults.set(Date().addingTimeInterval(3600), forKey: "autoOpenUntil")
