@@ -180,6 +180,114 @@ struct SenderInfo {
     }
 }
 
+// MARK: - Rule storage
+
+// Two kinds of routing rule live in UserDefaults:
+//   appRules  – keyed by sender bundle id: [ruleKey: ["dir":…, "name":…]]
+//   urlRules  – ordered list matched against the URL text:
+//               [["pattern": <regex>, "dir": <profileDir>, "name": <label>], …]
+
+func appRulesStore() -> [String: [String: String]] {
+    (UserDefaults.standard.dictionary(forKey: "appRules") as? [String: [String: String]]) ?? [:]
+}
+
+func urlRulesStore() -> [[String: String]] {
+    (UserDefaults.standard.array(forKey: "urlRules") as? [[String: String]]) ?? []
+}
+
+func saveURLRules(_ rules: [[String: String]]) {
+    if rules.isEmpty {
+        UserDefaults.standard.removeObject(forKey: "urlRules")
+    } else {
+        UserDefaults.standard.set(rules, forKey: "urlRules")
+    }
+}
+
+/// First URL rule whose regex matches `url` and whose target profile still
+/// exists; nil if none match. Rules are tried in stored order.
+func urlRuleMatch(_ url: String, profiles: [Profile]) -> String? {
+    let range = NSRange(url.startIndex..., in: url)
+    for rule in urlRulesStore() {
+        guard let pattern = rule["pattern"], !pattern.isEmpty,
+              let dir = rule["dir"], profiles.contains(where: { $0.dir == dir }),
+              let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+              re.firstMatch(in: url, options: [], range: range) != nil
+        else { continue }
+        return dir
+    }
+    return nil
+}
+
+/// A sensible starting regex for a URL: match its host anywhere in the link.
+func suggestedPattern(for url: String) -> String {
+    if let host = URL(string: url)?.host, !host.isEmpty {
+        return NSRegularExpression.escapedPattern(for: host)
+    }
+    return ""
+}
+
+/// Modal sheet to add a URL rule. Prefills the regex from `suggestedURL` (if any)
+/// and preselects `preselectDir` in the profile dropdown. Returns true if saved.
+@discardableResult
+func addURLRuleDialog(profiles: [Profile], suggestedURL: String?, preselectDir: String?) -> Bool {
+    guard !profiles.isEmpty else { return false }
+    let alert = NSAlert()
+    alert.messageText = "Add URL Rule"
+    alert.informativeText = "Links whose address matches this regular expression open in the chosen profile automatically — no picker. Matching is case-insensitive and looks anywhere in the URL."
+
+    let width: CGFloat = 460
+    let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 92))
+
+    let patternLabel = NSTextField(labelWithString: "Regex")
+    patternLabel.font = .systemFont(ofSize: 11)
+    patternLabel.textColor = .secondaryLabelColor
+    patternLabel.frame = NSRect(x: 0, y: 70, width: width, height: 14)
+
+    let field = NSTextField(frame: NSRect(x: 0, y: 42, width: width, height: 24))
+    field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+    field.stringValue = suggestedURL.map { suggestedPattern(for: $0) } ?? ""
+    field.placeholderString = #"e.g. github\.com/acme  or  \.corp\.example\.com"#
+
+    let profileLabel = NSTextField(labelWithString: "Profile")
+    profileLabel.font = .systemFont(ofSize: 11)
+    profileLabel.textColor = .secondaryLabelColor
+    profileLabel.frame = NSRect(x: 0, y: 22, width: width, height: 14)
+
+    let popup = NSPopUpButton(frame: NSRect(x: 0, y: -4, width: width, height: 26))
+    for p in profiles { popup.addItem(withTitle: p.label) }
+    if let preselectDir, let idx = profiles.firstIndex(where: { $0.dir == preselectDir }) {
+        popup.selectItem(at: idx)
+    }
+
+    container.addSubview(patternLabel)
+    container.addSubview(field)
+    container.addSubview(profileLabel)
+    container.addSubview(popup)
+    alert.accessoryView = container
+
+    alert.addButton(withTitle: "Save")
+    alert.addButton(withTitle: "Cancel")
+    alert.window.initialFirstResponder = field
+
+    while true {
+        guard alert.runModal() == .alertFirstButtonReturn else { return false }
+        let pattern = field.stringValue.trimmingCharacters(in: .whitespaces)
+        if pattern.isEmpty { return false }
+        if (try? NSRegularExpression(pattern: pattern)) == nil {
+            let e = NSAlert()
+            e.messageText = "Invalid regular expression"
+            e.informativeText = "“\(pattern)” isn’t a valid regex. Edit it and try again."
+            e.runModal()
+            continue // reshow the add dialog with the text intact
+        }
+        let dir = profiles[popup.indexOfSelectedItem].dir
+        var rules = urlRulesStore()
+        rules.append(["pattern": pattern, "dir": dir, "name": pattern])
+        saveURLRules(rules)
+        return true
+    }
+}
+
 // MARK: - Picker UI
 
 final class PickerTable: NSTableView {
@@ -204,8 +312,11 @@ final class PickerController: NSObject, NSTableViewDataSource, NSTableViewDelega
     let profiles: [Profile]
     var onActivate: (() -> Void)?
     var onSelectionChange: ((Int) -> Void)?
+    var onGear: (() -> Void)?
     var urlToCopy = ""
     init(profiles: [Profile]) { self.profiles = profiles }
+
+    @objc func openRulesEditor(_ sender: Any?) { onGear?() }
 
     @objc func copyURL(_ sender: Any?) {
         let pb = NSPasteboard.general
@@ -249,28 +360,47 @@ final class PickerController: NSObject, NSTableViewDataSource, NSTableViewDelega
 // MARK: - Rules management UI (shown when the app is launched directly)
 
 final class RulesManager: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+    /// Which store a listed entry belongs to, so removal touches the right one.
+    enum Kind {
+        case app(key: String)
+        case url(index: Int)
+    }
+
     private let profiles: [Profile]
-    private(set) var entries: [(key: String, display: String)] = []
+    /// Context for the "Add URL Rule…" button when opened from a picker: the
+    /// link being routed and the profile currently highlighted. Both nil on a
+    /// direct launch (no link in flight).
+    private let suggestedURL: String?
+    private let preselectDir: String?
+
+    private(set) var entries: [(kind: Kind, display: String)] = []
     weak var table: NSTableView?
     weak var removeButton: NSButton?
     weak var clearButton: NSButton?
 
-    init(profiles: [Profile]) {
+    init(profiles: [Profile], suggestedURL: String? = nil, preselectDir: String? = nil) {
         self.profiles = profiles
+        self.suggestedURL = suggestedURL
+        self.preselectDir = preselectDir
         super.init()
         rebuildEntries()
     }
 
-    private static func rules() -> [String: [String: String]] {
-        (UserDefaults.standard.dictionary(forKey: "appRules") as? [String: [String: String]]) ?? [:]
+    private func label(forDir dir: String?) -> String {
+        profiles.first(where: { $0.dir == dir })?.label ?? dir ?? "?"
     }
 
     private func rebuildEntries() {
-        entries = Self.rules().sorted { $0.key < $1.key }.map { key, rule in
-            let profileLabel = profiles.first(where: { $0.dir == rule["dir"] })?.label
-                ?? rule["dir"] ?? "?"
-            return (key, "\(rule["name"] ?? key)   →   \(profileLabel)")
+        var out: [(Kind, String)] = []
+        for (key, rule) in appRulesStore().sorted(by: { $0.key < $1.key }) {
+            out.append((.app(key: key),
+                        "App · \(rule["name"] ?? key)   →   \(label(forDir: rule["dir"]))"))
         }
+        for (i, rule) in urlRulesStore().enumerated() {
+            out.append((.url(index: i),
+                        "URL · /\(rule["pattern"] ?? "?")/   →   \(label(forDir: rule["dir"]))"))
+        }
+        entries = out.map { (kind: $0.0, display: $0.1) }
     }
 
     private func refresh() {
@@ -286,19 +416,33 @@ final class RulesManager: NSObject, NSTableViewDataSource, NSTableViewDelegate {
 
     @objc func removeSelected(_ sender: Any?) {
         guard let row = table?.selectedRow, row >= 0, row < entries.count else { return }
-        var rules = Self.rules()
-        rules.removeValue(forKey: entries[row].key)
-        if rules.isEmpty {
-            UserDefaults.standard.removeObject(forKey: "appRules")
-        } else {
-            UserDefaults.standard.set(rules, forKey: "appRules")
+        switch entries[row].kind {
+        case .app(let key):
+            var rules = appRulesStore()
+            rules.removeValue(forKey: key)
+            if rules.isEmpty {
+                UserDefaults.standard.removeObject(forKey: "appRules")
+            } else {
+                UserDefaults.standard.set(rules, forKey: "appRules")
+            }
+        case .url(let index):
+            var rules = urlRulesStore()
+            if index < rules.count { rules.remove(at: index) }
+            saveURLRules(rules)
         }
         refresh()
     }
 
     @objc func clearAll(_ sender: Any?) {
         UserDefaults.standard.removeObject(forKey: "appRules")
+        saveURLRules([])
         refresh()
+    }
+
+    @objc func addURLRule(_ sender: Any?) {
+        if addURLRuleDialog(profiles: profiles, suggestedURL: suggestedURL, preselectDir: preselectDir) {
+            refresh()
+        }
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { entries.count }
@@ -319,6 +463,52 @@ final class RulesManager: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) { updateButtons() }
+
+    /// Build the table-plus-buttons view used both on direct launch and by the
+    /// picker's gear button. Always includes "Add URL Rule…"; Remove/Clear act
+    /// on the selected/all rules.
+    func makeAccessory(width: CGFloat) -> NSView {
+        let table = NSTableView(frame: .zero)
+        let col = NSTableColumn(identifier: .init("r"))
+        col.width = width - 24
+        table.addTableColumn(col)
+        table.headerView = nil
+        table.rowHeight = 20
+        table.allowsEmptySelection = true
+        table.allowsMultipleSelection = false
+        table.dataSource = self
+        table.delegate = self
+
+        let buttonRow: CGFloat = 30
+        let tableHeight = CGFloat(max(min(entries.count, 6), 1)) * (table.rowHeight + 2) + 4
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: buttonRow, width: width, height: tableHeight))
+        scroll.documentView = table
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+
+        let addBtn = NSButton(title: "Add URL Rule…", target: self,
+                              action: #selector(addURLRule(_:)))
+        addBtn.frame = NSRect(x: 0, y: 0, width: 140, height: 26)
+        let removeBtn = NSButton(title: "Remove Selected", target: self,
+                                 action: #selector(removeSelected(_:)))
+        removeBtn.frame = NSRect(x: 146, y: 0, width: 150, height: 26)
+        let clearBtn = NSButton(title: "Clear All", target: self,
+                                action: #selector(clearAll(_:)))
+        clearBtn.frame = NSRect(x: 302, y: 0, width: 90, height: 26)
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: tableHeight + buttonRow))
+        container.addSubview(scroll)
+        container.addSubview(addBtn)
+        container.addSubview(removeBtn)
+        container.addSubview(clearBtn)
+
+        self.table = table
+        self.removeButton = removeBtn
+        self.clearButton = clearBtn
+        table.reloadData()
+        updateButtons()
+        return container
+    }
 }
 
 // MARK: - App lifecycle
@@ -359,52 +549,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 info += "\n\nAuto-open is ON: all links go to \(label(autoDir)) until \(fmt.string(from: until))."
             }
 
-            let rules = self.appRules()
-            var manager: RulesManager?
-            if !rules.isEmpty {
-                info += "\n\nApp rules (removals apply immediately). Hold ⇧ Shift while a link opens to bypass rules and get the picker."
-
-                let m = RulesManager(profiles: profiles)
-                manager = m
-                let width: CGFloat = 460
-                let table = NSTableView(frame: .zero)
-                let col = NSTableColumn(identifier: .init("r"))
-                col.width = width - 24
-                table.addTableColumn(col)
-                table.headerView = nil
-                table.rowHeight = 20
-                table.allowsEmptySelection = true
-                table.allowsMultipleSelection = false
-                table.dataSource = m
-                table.delegate = m
-
-                let tableHeight = CGFloat(min(m.entries.count, 6)) * (table.rowHeight + 2) + 4
-                let buttonRow: CGFloat = 30
-                let scroll = NSScrollView(frame: NSRect(x: 0, y: buttonRow, width: width, height: tableHeight))
-                scroll.documentView = table
-                scroll.hasVerticalScroller = true
-                scroll.borderType = .bezelBorder
-
-                let removeBtn = NSButton(title: "Remove Selected", target: m,
-                                         action: #selector(RulesManager.removeSelected(_:)))
-                removeBtn.frame = NSRect(x: 0, y: 0, width: 150, height: 26)
-                let clearBtn = NSButton(title: "Clear All", target: m,
-                                        action: #selector(RulesManager.clearAll(_:)))
-                clearBtn.frame = NSRect(x: 156, y: 0, width: 100, height: 26)
-
-                let container = NSView(frame: NSRect(x: 0, y: 0, width: width,
-                                                     height: tableHeight + buttonRow))
-                container.addSubview(scroll)
-                container.addSubview(removeBtn)
-                container.addSubview(clearBtn)
-
-                m.table = table
-                m.removeButton = removeBtn
-                m.clearButton = clearBtn
-                table.reloadData()
-                m.updateButtons()
-                a.accessoryView = container
-            }
+            info += "\n\nRouting rules (changes apply immediately). Hold ⇧ Shift while a link opens to bypass rules and get the picker."
+            let manager = RulesManager(profiles: profiles)
+            a.accessoryView = manager.makeAccessory(width: 460)
             a.informativeText = info
 
             a.addButton(withTitle: "OK")
@@ -461,6 +608,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                let autoDir = defaults.string(forKey: "autoOpenProfileDir"),
                profiles.contains(where: { $0.dir == autoDir }) {
                 openInChrome(profileDir: autoDir, url: url)
+                return
+            }
+            // URL content rule? (regex match on the link itself) — checked
+            // before app rules since it's the more specific signal.
+            if let ruleDir = urlRuleMatch(url, profiles: profiles) {
+                openInChrome(profileDir: ruleDir, url: url)
                 return
             }
             // Per-app rule for this sender? ("Always Use for This App")
@@ -544,6 +697,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         copyButton.frame = NSRect(x: width - 22, y: tableHeight + gap + urlHeight - 18,
                                   width: 20, height: 18)
         container.addSubview(copyButton)
+
+        // Gear button (to the left of copy): opens the rules editor, prefilled to
+        // add a URL rule for this link and the highlighted profile.
+        let gearIcon = NSImage(systemSymbolName: "gearshape", accessibilityDescription: "Rules")
+        let gearButton: NSButton = gearIcon.map {
+            NSButton(image: $0, target: controller, action: #selector(PickerController.openRulesEditor(_:)))
+        } ?? NSButton(title: "Rules", target: controller, action: #selector(PickerController.openRulesEditor(_:)))
+        gearButton.isBordered = false
+        gearButton.toolTip = "URL & app rules"
+        gearButton.frame = NSRect(x: width - 44, y: tableHeight + gap + urlHeight - 18,
+                                  width: 20, height: 18)
+        container.addSubview(gearButton)
+        controller.onGear = { [weak table] in
+            let dir = (table?.selectedRow).flatMap { $0 >= 0 && $0 < profiles.count ? profiles[$0].dir : nil }
+            let manager = RulesManager(profiles: profiles, suggestedURL: url, preselectDir: dir)
+            let editor = NSAlert()
+            editor.messageText = "Routing Rules"
+            editor.informativeText = "URL rules match the link text; app rules match the app that opened it. Add a URL rule for this link, or remove existing rules."
+            editor.accessoryView = manager.makeAccessory(width: 460)
+            editor.addButton(withTitle: "Done")
+            editor.runModal()
+            _ = manager // keep alive for the modal
+        }
 
         if let sender = request.sender {
             let y = tableHeight + gap + urlHeight + 5
