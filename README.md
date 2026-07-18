@@ -30,9 +30,18 @@ When any app opens an `http`/`https` URL, a small dialog appears:
 - **"Always Use for *This App*"** — per-app routing rules. Click it once on a
   WhatsApp link with your personal profile highlighted, and every WhatsApp link
   opens there from then on, no dialog. Rules are keyed to the sending app's
-  bundle id. **Hold ⇧ Shift while a link opens** to bypass rules (and the
-  1-hour mode) and force the picker; launch the app directly to review rules or
-  clear them.
+  bundle id.
+- **URL rules** — route by what's *in* the link. Click the ⚙︎ gear in the
+  picker's corner to add a rule: a regular expression (prefilled with the link's
+  host, editable) plus the target profile. From then on any URL matching that
+  regex opens in that profile silently — e.g. `\.corp\.example\.com` → Work, or
+  `github\.com/acme` → a client profile. Matching is case-insensitive and looks
+  anywhere in the URL. URL rules are checked before app rules (they're the more
+  specific signal). Launch the app directly to see, add, or remove them.
+- **Hold ⇧ Shift while a link opens** to bypass all rules (URL, app, and the
+  1-hour mode) and force the picker. Launch the app directly
+  (`open -a "Chrome Profile Selector"`) to review, add, or remove any rule —
+  removals apply immediately.
 - **Return/Enter** opens the highlighted profile; **Esc** cancels (drops the URL).
 - **↑/↓** move the highlight; pressing **1–9** opens that profile instantly;
   double-click works too.
